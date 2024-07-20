@@ -1,0 +1,90 @@
+name: Build FreeBSD for Raspberry Pi
+
+on:
+  push:
+    branches:
+      - main  # Testing
+
+jobs:
+  build-freebsd:
+    runs-on: ubuntu-latest  # Or a suitable Linux runner
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up build environment
+        run: |
+          sudo apt update
+          sudo apt install -y git wget xz-utils  # Install necessary tools
+          sudo mkdir /usr/tools
+          sudo git clone --depth=1 https://github.com/opnsense/tools.git /usr/tools
+          sudo make -C /usr/tools update
+          cd /usr/ports/ports-mgmt/pkg/
+          sudo make -j4
+          sudo make reinstall
+
+      - name: Download FreeBSD image
+        run: |
+          sudo wget ${{ secrets.FREEBSD_IMAGE_URL }} -O /tmp/FreeBSD-13.2-RELEASE-arm64-aarch64-RPI.img.xz
+
+      - name: Unpack FreeBSD image
+        run: |
+          sudo mkdir /mnt/freebsd
+          sudo xzcat /tmp/FreeBSD-13.2-RELEASE-arm64-aarch64-RPI.img.xz | sudo dd of=/mnt/freebsd status=progress bs=16M
+          sudo mount /mnt/freebsd
+
+      - name: Chroot into FreeBSD
+        run: |
+          sudo chroot /mnt/freebsd /bin/bash -c "
+            echo 'uart_2ndstage=1\nenable_uart=1' | sudo tee -a /boot/config.txt
+            echo 'over_voltage=6\narm_freq=2000' | sudo tee -a /boot/config.txt
+
+            # Enable powerd
+            sysrc powerd_enable=\"YES\"
+            /etc/rc.d/powerd restart
+
+            # Sync time
+            ntpdate pool.ntp.org
+
+            # Update the system
+            pkg update
+            pkg upgrade
+
+            # Install tools
+            pkg install -y sudo git rpi-firmware u-boot-rpi4
+
+            # Set up sudoers
+            echo 'Defaults env_keep += \"HOME\"\n%wheel ALL=(ALL) NOPASSWD: ALL' >> /usr/local/etc/sudoers.d/wheel
+
+            # Get IP address
+            ifconfig genet0 | grep inet >> /tmp/rpi_ip.txt
+          "
+
+      - name: Build OPNsense
+        run: |
+          sudo make -C /usr/tools/ VERSION=${{ secrets.OPNSENSE_VERSION }} DEVICE=ARM64 base
+          sudo make -C /usr/tools/ VERSION=${{ secrets.OPNSENSE_VERSION }} DEVICE=ARM64 kernel
+          sudo make -C /usr/tools/ VERSION=${{ secrets.OPNSENSE_VERSION }} DEVICE=ARM64 ports
+          sudo make -C /usr/tools/ VERSION=${{ secrets.OPNSENSE_VERSION }} DEVICE=ARM64 plugins
+          sudo make -C /usr/tools/ VERSION=${{ secrets.OPNSENSE_VERSION }} DEVICE=ARM64 core
+          sudo make -C /usr/tools/ VERSION=${{ secrets.OPNSENSE_VERSION }} DEVICE=ARM64 packages
+          sudo make -C /usr/tools/ VERSION=${{ secrets.OPNSENSE_VERSION }} DEVICE=ARM64 distfiles
+          sudo cp -lv /usr/local/opnsense/build/${{ secrets.OPNSENSE_VERSION }}[0:2]/aarch64/sets/base-${{ secrets.OPNSENSE_VERSION }}-aarch64.txz /usr/local/opnsense/build/${{ secrets.OPNSENSE_VERSION }}[0:2]/aarch64/sets/base-${{ secrets.OPNSENSE_VERSION }}-aarch64-RPI.txz
+          sudo cp -lv /usr/local/opnsense/build/${{ secrets.OPNSENSE_VERSION }}[0:2]/aarch64/sets/kernel-${{ secrets.OPNSENSE_VERSION }}-aarch64.txz /usr/local/opnsense/build/${{ secrets.OPNSENSE_VERSION }}[0:2]/aarch64/sets/kernel-${{ secrets.OPNSENSE_VERSION }}-aarch64-RPI.txz
+          sudo make -C /usr/tools/ VERSION=${{ secrets.OPNSENSE_VERSION }} DEVICE=RPI arm
+
+      - name: Upload built image
+        uses: actions/upload-artifact@v3
+        with:
+          name: opnsense-image
+          path: /usr/local/opnsense/build/${{ secrets.OPNSENSE_VERSION }}[0:2]/aarch64/images/OPNsense-${{ secrets.OPNSENSE_VERSION }}-arm-aarch64-RPI.img
+
+      - name: Output instructions
+        run: |
+          echo "OPNsense image built successfully!"
+          echo "Download the image from the artifacts tab and transfer it to your Raspberry Pi."
+
+      - name: Unmount FreeBSD
+        run: |
+          sudo umount /mnt/freebsd
+          sudo rmdir /mnt/freebsd
