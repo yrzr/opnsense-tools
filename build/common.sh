@@ -637,6 +637,10 @@ setup_distfiles()
 {
 	echo ">>> Setting up distfiles in ${1}"
 
+	mkdir -p /usr/ports/distfiles
+	mkdir -p ${STAGEDIR}/usr/ports/distfiles
+	mount -t nullfs /usr/ports/distfiles ${STAGEDIR}/usr/ports/distfiles
+
 	DISTFILESET=$(find_set distfiles)
 	if [ -n "${DISTFILESET}" ]; then
 		mkdir -p ${1}${PORTSDIR}
@@ -1182,6 +1186,7 @@ setup_stage()
 /boot/msdos
 /dev
 /mnt
+/usr/ports/distfiles
 ${SRCDIR}
 ${PORTSDIR}
 ${COREDIR}
